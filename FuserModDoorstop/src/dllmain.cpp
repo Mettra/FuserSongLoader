@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <Psapi.h>
 
 #define ADD_ORIGINAL(i, name) originalFunctions[i] = GetProcAddress(dll, #name)
 
@@ -172,6 +173,7 @@ static bool(*CheckSignature)(void *ths, byte *ChunkInfo);
 
 
 static byte* Base;
+size_t ModuleSize = 0;
 
 template<typename T>
 inline T* offset(void* ptr, size_t offset) {
@@ -201,6 +203,7 @@ uint64_t Second_Inner_Hook(byte* param1, byte* param2, byte* param3) {
 	return ret;
 }
 
+size_t The_Second_Copy_UnencryptFnRVA;
 uint64_t The_Second_Copy_Hook(byte* param) {
 	auto ret = The_Second_Copy(param);
 
@@ -211,7 +214,7 @@ uint64_t The_Second_Copy_Hook(byte* param) {
 		data.doing_unencryption = true;
 
 		
-		auto fn = (void(*)(byte*, uint64_t, uint32_t))(Base + (0x7ff68f31e2c0 - 0x7ff68db60000));
+		auto fn = (void(*)(byte*, uint64_t, uint32_t))(Base + The_Second_Copy_UnencryptFnRVA);
 		fn(*(byte **)(param + 0x40), *offset<uint32_t>(*(byte**)offset(param,0x30), 0x4e8) , 0);
 
 		*reinterpret_cast<bool*>(param + 0x1ba) = false;
@@ -290,23 +293,56 @@ void GetMasterHash_Hook(void *p1, void *p2, void* outHash) {
 	}
 }
 
+size_t DoSignatureCheck_ContinueFnRVA;
 void DoSignatureCheck_Hook(void *ths, byte bWasCanceled, void *Request, int Index) {
 	//Just skip the whole signature check
-	auto continueFn = (void(*)(void *ths, byte bWasCanceled, void *Request, int Index))(Base + (0x7ff74d0c7880 - 0x7ff74b930000));
+	auto continueFn = (void(*)(void *ths, byte bWasCanceled, void *Request, int Index))(Base + DoSignatureCheck_ContinueFnRVA);
 	continueFn(ths, bWasCanceled, Request, Index);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-std::vector<char> HexToBytes(const std::string& hex) {
-	std::vector<char> bytes;
+std::vector<byte> HexToBytes(const std::string& hex) {
+	std::vector<byte> bytes;
 
 	for (unsigned int i = 0; i < hex.length(); i += 2) {
 		std::string byteString = hex.substr(i, 2);
-		char byte = (char)strtol(byteString.c_str(), NULL, 16);
-		bytes.push_back(byte);
+		byte b = (byte)strtol(byteString.c_str(), NULL, 16);
+		bytes.push_back(b);
 	}
 
 	return bytes;
+}
+
+std::vector<size_t> found_rva;
+
+byte* find_function(const char *name, const char *byteSequence) {
+	printf("Searching for %s.\n", name);
+	auto data = HexToBytes(byteSequence);
+
+	printf("	Byte Sequence: ");
+	for (int i = 0; i < data.size(); i++)
+		printf("%02x ", reinterpret_cast<byte*>(data.data())[i]);
+	printf("\n");
+
+	for (size_t i = 0; i < ModuleSize; ++i) {
+		bool done = true;
+		for (size_t j = 0; j < data.size(); ++j) {
+			if ((*(Base + i + j) != *(data.data() + j)) && byteSequence[j * 2] != '?') {
+				done = false;
+				break;
+			}
+		}
+
+		if (done) {
+			printf("	Found! RVA: 0x%x\n", (unsigned int)i);
+			found_rva.emplace_back(i);
+			return Base + i;
+		}
+	}
+
+	printf("	No function found with that pattern!\n");
+	found_rva.emplace_back(0);
+	return nullptr;
 }
 
 
@@ -326,15 +362,52 @@ void FUSER_HOOK() {
 		return;
 	}
 	
-	The_Second_Copy = (decltype(The_Second_Copy))(Base + (0x7ff68fda5700 - 0x7ff68db60000));
-	Decrypt_Fn = (decltype(Decrypt_Fn))(Base + (0x7ff68fda5ad0 - 0x7ff68db60000));
-	Second_Inner = (decltype(Second_Inner))(Base + (0x7ff68fda4a10 - 0x7ff68db60000));
-	FPakFile_Ctor = (decltype(FPakFile_Ctor))(Base + (0x7ff68f2e7470 - 0x7ff68db60000));
-	OnCrashFunc = (decltype(OnCrashFunc))(Base + (0x7ff74c2f6870 - 0x7ff74b930000));
-	GetMasterHash = (decltype(GetMasterHash))(Base + (0x7ff74c2abd20 - 0x7ff74b930000));
-	GetPakSignatureFile = (decltype(GetPakSignatureFile))(Base + (0x7ff74d0c26b0 - 0x7ff74b930000));
-	HashAndGetSize = (decltype(HashAndGetSize))(Base + (0x7ff74d0b0930 - 0x7ff74b930000));
-	DoSignatureCheck = (decltype(DoSignatureCheck))(Base + (0x7ff74d0be3f0 - 0x7ff74b930000));
+// Change to 0 to re-lookup all of these functions.
+#if 1
+	The_Second_Copy = (decltype(The_Second_Copy))(Base + 0x2253aa0);
+	Decrypt_Fn = (decltype(Decrypt_Fn))(Base + 0x2253e70);
+	Second_Inner = (decltype(Second_Inner))(Base + 0x2252db0);
+	FPakFile_Ctor = (decltype(FPakFile_Ctor))(Base + 0x17935c0);
+	OnCrashFunc = (decltype(OnCrashFunc))(Base + 0x9d2540);
+	GetMasterHash = (decltype(GetMasterHash))(Base + 0x9879f0);
+	GetPakSignatureFile = (decltype(GetPakSignatureFile))(Base + 0x179e800);
+	HashAndGetSize = (decltype(HashAndGetSize))(Base + 0x178ca80);
+	DoSignatureCheck = (decltype(DoSignatureCheck))(Base + 0x179a540);
+
+
+	DoSignatureCheck_ContinueFnRVA = 0x17a39d0;
+	The_Second_Copy_UnencryptFnRVA = 0x17ca410;
+
+#else
+	MODULEINFO moduleInfo;
+	GetModuleInformation(GetCurrentProcess(), (HMODULE)Base, &moduleInfo, sizeof(moduleInfo));
+	ModuleSize = moduleInfo.SizeOfImage;
+
+	printf("Functions are unknown. Searching %zd bytes in process...\n\n", ModuleSize);
+
+	find_function("The_Second_Copy", "405556488d6c24b14881ecd8000000488bf1488b89c00100004885c9740de85dc61300ff86c8010000eb0a");
+	find_function("Decrypt_Fn", "405641564157b820800000e880235c00482be0488b4130498bf04c8bfa4c8bf1837824ff0f84040100004889bc2450800000");
+	find_function("Second_Inner", "48895c2408574883ec204c894140488bd966c741480000498bf848895130c6421801c6413800488b49304883c128");
+	find_function("FPakFile_Ctor", "48895c2410555657415641574883ec304533ff410fb6e94c8939498bf04c8979084c8bf2488bd94d85c0743f66453938");
+	find_function("OnCrashFunc", "48895c24185556574154415541564157488dac2450faffff4881ecb0060000488b05????????4833c4488985a0050000");
+	find_function("GetMasterHash", "4c8bdc534881ec00010000488b05????????4833c448898424f0000000498d4398498bd8498943d84c8bc233c0c744242001234567");
+	find_function("GetPakSignatureFile", "405556574154488dac2478ffffff4881ec88010000488b05????????4833c4488945784c8be1488bf2488d0d");
+	find_function("HashAndGetSize", "48895c24084889742410574883ec30498bd8488bfa488bf1e8530000004885c0742d0f10064c8b10488d5424204c8bcb4c8bc7488bc80f29442420");
+	find_function("DoSignatureCheck", "4055535657415541564157488d6c24f04881ec10010000488b05????????4833c44889450033c04963f1488d590848894c2438");
+
+	find_function("DoSignatureCheck_ContinueFnRVA", "48895c240848896c2410488974241857415641574883ec20488bf14963f94883c108498be8440fb6f2");
+	find_function("The_Second_Copy_UnencryptFnRVA", "488b0148ff6068cccccccccccccccccc");
+
+	printf("RVA list:\n");
+	for (auto &&rva : found_rva) {
+		printf("0x%x\n", (unsigned int)rva);
+	}
+	found_rva.clear();
+
+	printf("Searches done! Copy the addresses and apply them to the cpp file!\n");
+	system("pause");
+	_Exit(0);
+#endif
 
 	setup_hook((void**)&The_Second_Copy, The_Second_Copy_Hook);
 	setup_hook((void**)&Decrypt_Fn, Decrypt_Fn_Hook);
@@ -364,7 +437,7 @@ BOOL WINAPI DllMain(HMODULE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 		hooked = true;
 		
 //To Enable Console
-#if 0
+#if 1
 		//Use existing console, or create one if needed
 		if (!AttachConsole(-1)) {
 			AllocConsole();
