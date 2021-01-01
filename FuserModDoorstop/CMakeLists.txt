@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(FuserModDoorstop SHARED 
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dllmain.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/sha1.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/uasset.cpp
 )
 
 include(GenerateExportHeader)

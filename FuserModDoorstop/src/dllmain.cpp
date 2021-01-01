@@ -1,3 +1,11 @@
+#include "DT_UnlocksSongsData.h"
+#include "uasset.h"
+
+#include <unordered_set>
+#include <filesystem>
+namespace fs = std::filesystem;
+
+#define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Psapi.h>
@@ -170,7 +178,10 @@ static void*(*GetPakSignatureFile)(void *ths, TCHAR* InFilename);
 static uint64_t(*HashAndGetSize)(void*p1, void*p2, void*p3);
 static void(*DoSignatureCheck)(void *ths, byte bWasCanceled, void *Request, int Index);
 static bool(*CheckSignature)(void *ths, byte *ChunkInfo);
-
+static void(*MountPakFile)(void *ths, const TCHAR* InPakFilename, u32 PakOrder, const TCHAR* InPath /*= NULL*/, bool bLoadIndex /*= true*/);
+static void*(*FindPlatformFile)(void *ths, TCHAR *name);
+static void(*DoSignatureCheck_ContinueFn)(void *ths, byte bWasCanceled, void *Request, int Index);
+static void(*The_Second_Copy_UnencryptFn)(byte*, uint64_t, uint32_t);
 
 static byte* Base;
 size_t ModuleSize = 0;
@@ -203,7 +214,6 @@ uint64_t Second_Inner_Hook(byte* param1, byte* param2, byte* param3) {
 	return ret;
 }
 
-size_t The_Second_Copy_UnencryptFnRVA;
 uint64_t The_Second_Copy_Hook(byte* param) {
 	auto ret = The_Second_Copy(param);
 
@@ -213,9 +223,7 @@ uint64_t The_Second_Copy_Hook(byte* param) {
 		auto &&data = DOING_UNENCRYPTION[std::this_thread::get_id()];
 		data.doing_unencryption = true;
 
-		
-		auto fn = (void(*)(byte*, uint64_t, uint32_t))(Base + The_Second_Copy_UnencryptFnRVA);
-		fn(*(byte **)(param + 0x40), *offset<uint32_t>(*(byte**)offset(param,0x30), 0x4e8) , 0);
+		The_Second_Copy_UnencryptFn(*(byte **)(param + 0x40), *offset<uint32_t>(*(byte**)offset(param,0x30), 0x4e8) , 0);
 
 		*reinterpret_cast<bool*>(param + 0x1ba) = false;
 		return 1;
@@ -293,11 +301,23 @@ void GetMasterHash_Hook(void *p1, void *p2, void* outHash) {
 	}
 }
 
-size_t DoSignatureCheck_ContinueFnRVA;
 void DoSignatureCheck_Hook(void *ths, byte bWasCanceled, void *Request, int Index) {
 	//Just skip the whole signature check
-	auto continueFn = (void(*)(void *ths, byte bWasCanceled, void *Request, int Index))(Base + DoSignatureCheck_ContinueFnRVA);
-	continueFn(ths, bWasCanceled, Request, Index);
+	DoSignatureCheck_ContinueFn(ths, bWasCanceled, Request, Index);
+}
+
+std::wstring needFileMounted;
+
+void* FindPlatformFile_Hook(void *ths, TCHAR *name) {
+	auto ret = FindPlatformFile(ths, name);
+
+	if (!needFileMounted.empty()) {
+		auto pakfile = FindPlatformFile(ths, L"PakFile");
+		MountPakFile(pakfile, needFileMounted.c_str(), 3, nullptr, true);
+		needFileMounted.clear();
+	}
+
+	return ret;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -313,16 +333,22 @@ std::vector<byte> HexToBytes(const std::string& hex) {
 	return bytes;
 }
 
+#if 0
+#define DBG_PRINT(...) printf(__VA_ARGS__)
+#else 
+#define DBG_PRINT(...)
+#endif
+
 std::vector<size_t> found_rva;
 
 byte* find_function(const char *name, const char *byteSequence) {
-	printf("Searching for %s.\n", name);
+	DBG_PRINT("Searching for %s.\n", name);
 	auto data = HexToBytes(byteSequence);
 
-	printf("	Byte Sequence: ");
+	DBG_PRINT("	Byte Sequence: ");
 	for (int i = 0; i < data.size(); i++)
-		printf("%02x ", reinterpret_cast<byte*>(data.data())[i]);
-	printf("\n");
+		DBG_PRINT("%02x ", reinterpret_cast<byte*>(data.data())[i]);
+	DBG_PRINT("\n");
 
 	for (size_t i = 0; i < ModuleSize; ++i) {
 		bool done = true;
@@ -334,13 +360,13 @@ byte* find_function(const char *name, const char *byteSequence) {
 		}
 
 		if (done) {
-			printf("	Found! RVA: 0x%x\n", (unsigned int)i);
+			DBG_PRINT("	Found! RVA: 0x%x\n", (unsigned int)i);
 			found_rva.emplace_back(i);
 			return Base + i;
 		}
 	}
 
-	printf("	No function found with that pattern!\n");
+	DBG_PRINT("	No function found with that pattern!\n");
 	found_rva.emplace_back(0);
 	return nullptr;
 }
@@ -363,7 +389,7 @@ void FUSER_HOOK() {
 	}
 	
 // Change to 0 to re-lookup all of these functions.
-#if 1
+#if 0
 	The_Second_Copy = (decltype(The_Second_Copy))(Base + 0x2253aa0);
 	Decrypt_Fn = (decltype(Decrypt_Fn))(Base + 0x2253e70);
 	Second_Inner = (decltype(Second_Inner))(Base + 0x2252db0);
@@ -374,6 +400,8 @@ void FUSER_HOOK() {
 	HashAndGetSize = (decltype(HashAndGetSize))(Base + 0x178ca80);
 	DoSignatureCheck = (decltype(DoSignatureCheck))(Base + 0x179a540);
 
+	MountPakFile = (decltype(MountPakFile))(Base + 0x017a2d00);
+	FindPlatformFile = (decltype(FindPlatformFile))(Base + 0x008ee7a0);
 
 	DoSignatureCheck_ContinueFnRVA = 0x17a39d0;
 	The_Second_Copy_UnencryptFnRVA = 0x17ca410;
@@ -385,28 +413,31 @@ void FUSER_HOOK() {
 
 	printf("Functions are unknown. Searching %zd bytes in process...\n\n", ModuleSize);
 
-	find_function("The_Second_Copy", "405556488d6c24b14881ecd8000000488bf1488b89c00100004885c9740de85dc61300ff86c8010000eb0a");
-	find_function("Decrypt_Fn", "405641564157b820800000e880235c00482be0488b4130498bf04c8bfa4c8bf1837824ff0f84040100004889bc2450800000");
-	find_function("Second_Inner", "48895c2408574883ec204c894140488bd966c741480000498bf848895130c6421801c6413800488b49304883c128");
-	find_function("FPakFile_Ctor", "48895c2410555657415641574883ec304533ff410fb6e94c8939498bf04c8979084c8bf2488bd94d85c0743f66453938");
-	find_function("OnCrashFunc", "48895c24185556574154415541564157488dac2450faffff4881ecb0060000488b05????????4833c4488985a0050000");
-	find_function("GetMasterHash", "4c8bdc534881ec00010000488b05????????4833c448898424f0000000498d4398498bd8498943d84c8bc233c0c744242001234567");
-	find_function("GetPakSignatureFile", "405556574154488dac2478ffffff4881ec88010000488b05????????4833c4488945784c8be1488bf2488d0d");
-	find_function("HashAndGetSize", "48895c24084889742410574883ec30498bd8488bfa488bf1e8530000004885c0742d0f10064c8b10488d5424204c8bcb4c8bc7488bc80f29442420");
-	find_function("DoSignatureCheck", "4055535657415541564157488d6c24f04881ec10010000488b05????????4833c44889450033c04963f1488d590848894c2438");
+	The_Second_Copy = (decltype(The_Second_Copy)) find_function("The_Second_Copy", "405556488d6c24b14881ecd8000000488bf1488b89c00100004885c9740de85dc61300ff86c8010000eb0a");
+	Decrypt_Fn = (decltype(Decrypt_Fn)) find_function("Decrypt_Fn", "405641564157b820800000e880235c00482be0488b4130498bf04c8bfa4c8bf1837824ff0f84040100004889bc2450800000");
+	Second_Inner = (decltype(Second_Inner)) find_function("Second_Inner", "48895c2408574883ec204c894140488bd966c741480000498bf848895130c6421801c6413800488b49304883c128");
+	FPakFile_Ctor = (decltype(FPakFile_Ctor)) find_function("FPakFile_Ctor", "48895c2410555657415641574883ec304533ff410fb6e94c8939498bf04c8979084c8bf2488bd94d85c0743f66453938");
+	OnCrashFunc = (decltype(OnCrashFunc)) find_function("OnCrashFunc", "48895c24185556574154415541564157488dac2450faffff4881ecb0060000488b05????????4833c4488985a0050000");
+	GetMasterHash = (decltype(GetMasterHash)) find_function("GetMasterHash", "4c8bdc534881ec00010000488b05????????4833c448898424f0000000498d4398498bd8498943d84c8bc233c0c744242001234567");
+	GetPakSignatureFile = (decltype(GetPakSignatureFile)) find_function("GetPakSignatureFile", "405556574154488dac2478ffffff4881ec88010000488b05????????4833c4488945784c8be1488bf2488d0d");
+	HashAndGetSize = (decltype(HashAndGetSize)) find_function("HashAndGetSize", "48895c24084889742410574883ec30498bd8488bfa488bf1e8530000004885c0742d0f10064c8b10488d5424204c8bcb4c8bc7488bc80f29442420");
+	DoSignatureCheck = (decltype(DoSignatureCheck)) find_function("DoSignatureCheck", "4055535657415541564157488d6c24f04881ec10010000488b05????????4833c44889450033c04963f1488d590848894c2438");
 
-	find_function("DoSignatureCheck_ContinueFnRVA", "48895c240848896c2410488974241857415641574883ec20488bf14963f94883c108498be8440fb6f2");
-	find_function("The_Second_Copy_UnencryptFnRVA", "488b0148ff6068cccccccccccccccccc");
+	MountPakFile = (decltype(MountPakFile)) find_function("MountPakFile", "488bc4448940184889480855534157488d68a94881ecd000000048897010");
+	FindPlatformFile = (decltype(FindPlatformFile)) find_function("FindPlatformFile", "48895c2408574883ec20488b19488bfa4885db7429488b03488bcbff5068488bc8488bd7");
 
-	printf("RVA list:\n");
-	for (auto &&rva : found_rva) {
-		printf("0x%x\n", (unsigned int)rva);
-	}
-	found_rva.clear();
+	DoSignatureCheck_ContinueFn = (decltype(DoSignatureCheck_ContinueFn)) find_function("DoSignatureCheck_Continue", "48895c240848896c2410488974241857415641574883ec20488bf14963f94883c108498be8440fb6f2");
+	The_Second_Copy_UnencryptFn = (decltype(The_Second_Copy_UnencryptFn)) find_function("The_Second_Copy_UnencryptFn", "488b0148ff6068cccccccccccccccccc");
 
-	printf("Searches done! Copy the addresses and apply them to the cpp file!\n");
-	system("pause");
-	_Exit(0);
+	//printf("RVA list:\n");
+	//for (auto &&rva : found_rva) {
+	//	printf("0x%x\n", (unsigned int)rva);
+	//}
+	//found_rva.clear();
+	//
+	//printf("Searches done! Copy the addresses and apply them to the cpp file!\n");
+	//system("pause");
+	//_Exit(0);
 #endif
 
 	setup_hook((void**)&The_Second_Copy, The_Second_Copy_Hook);
@@ -417,6 +448,159 @@ void FUSER_HOOK() {
 	setup_hook((void**)&GetPakSignatureFile, GetPakSignatureFile_Hook);
 	setup_hook((void**)&HashAndGetSize, HashAndGetSize_Hook);
 	setup_hook((void**)&DoSignatureCheck, DoSignatureCheck_Hook);
+	setup_hook((void**)&FindPlatformFile, FindPlatformFile_Hook);
+}
+
+void CreateUnlockPak() {
+	//Now, create a pak file for all songs that need unlocking
+	printf("\n\nUpdating unlock file for custom songs...");
+	std::error_code ec;
+
+	auto paksPath = fs::current_path().parent_path().parent_path() / "Content" / "Paks";
+	auto custom_songs = paksPath / "custom_songs";
+	auto customSongUnlockPak = paksPath / "customSongsUnlocked_P.pak";
+
+	printf("Paks Path: %ls\n", paksPath.c_str());
+	printf("Custom Songs Path: %ls\n", custom_songs.c_str());
+	printf("Unlock Pak Path: %ls\n", customSongUnlockPak.c_str());
+
+	auto unlockWriteTime = fs::last_write_time(customSongUnlockPak, ec);
+	if (fs::exists(custom_songs)) {
+		std::unordered_set<std::string> songNames;
+		bool needRewrite = false;
+
+		for (auto& dirEntry : fs::recursive_directory_iterator(custom_songs)) {
+			if (dirEntry.is_regular_file()) {
+				auto pakName = dirEntry.path().stem().string();
+				if (pakName.find("_P") != std::string::npos) {
+					songNames.emplace(pakName.substr(0, pakName.size() - 2));
+
+					if (fs::last_write_time(dirEntry, ec) > unlockWriteTime) {
+						needRewrite = true;
+					}
+				}
+			}
+		}
+
+		if (needRewrite) {
+			printf("Found new custom songs! Creating customSongsUnlocked_P.pak to unlock them...\n");
+
+			DataBuffer pakBuffer;
+			pakBuffer.loading = true;
+			pakBuffer.buffer = DT_UnlocksSongsPak;
+			pakBuffer.size = sizeof(DT_UnlocksSongsPak);
+
+			PakFile DT_UnlocksSongs;
+			DT_UnlocksSongs.serialize(pakBuffer);
+
+			size_t expFileIdx = 0;
+			for (auto &&e : DT_UnlocksSongs.entries) {
+				if (e.name == "DT_UnlocksSongs.uexp") {
+					break;
+				}
+				++expFileIdx;
+			}
+
+			//Add songs to DT_UnlocksSongs.uexp
+			auto &&data = std::get<PakFile::PakEntry::PakAssetData>(DT_UnlocksSongs.entries[expFileIdx].data);
+			if (auto cat = std::get_if<DataTableCategory>(&data.data.catagoryValues[0].value)) {
+
+				//Find and clone the row for "bornthisway"
+				std::vector<u8> cloneData;
+				{
+					AssetCtx ctx;
+					ctx.header = data.header;
+					ctx.parseHeader = false;
+					ctx.length = 0;
+
+					DataBuffer entryCloneBuffer;
+					entryCloneBuffer.ctx_ = &ctx;
+					entryCloneBuffer.loading = false;
+					entryCloneBuffer.setupVector(cloneData);
+
+					size_t bornthiswayEntryId = 0;
+					for (auto &&e : cat->entries) {
+						if (e.rowName.getString(data.header) == "bornthisway") {
+							break;
+						}
+						bornthiswayEntryId++;
+					}
+
+					cat->entries[bornthiswayEntryId].serialize(entryCloneBuffer);
+				}
+
+				//For each custom song, use the cloned row to add an entry that unlocks the song at no cost
+				for (auto &&songName : songNames) {
+					DataTableCategory::Entry e;
+					e.value.type.ref = cat->dataType.ref;
+					{
+						AssetCtx ctx;
+						ctx.header = data.header;
+						ctx.parseHeader = false;
+						ctx.length = 0;
+
+						DataBuffer entryCloneBuffer;
+						entryCloneBuffer.ctx_ = &ctx;
+						entryCloneBuffer.setupVector(cloneData);
+
+						e.serialize(entryCloneBuffer);
+					}
+
+					printf("Creating entry for %s\n", songName.c_str());
+					e.rowName = data.header->findOrCreateName(songName);
+					std::get<NameProperty>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(data.header->findName("unlockName"))->value).name = e.rowName;
+					std::get<PrimitiveProperty<i32>>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(data.header->findName("audioCreditsCost"))->value).data = 0;
+
+					cat->entries.emplace_back(std::move(e));
+				}
+			}
+
+
+			//Write out pak file
+			std::vector<u8> outData;
+			DataBuffer outBuf;
+			outBuf.setupVector(outData);
+			outBuf.loading = false;
+			DT_UnlocksSongs.serialize(outBuf);
+			outBuf.finalize();
+
+			std::ofstream outPak(customSongUnlockPak, std::ios_base::binary);
+			outPak.write((char*)outBuf.buffer, outBuf.size);
+			outPak.close();
+
+			//Write out sig file
+			auto customSongUnlockSig = paksPath / "customSongsUnlocked_P.sig";
+			PakSigFile sigFile;
+			sigFile.encrypted_total_hash.resize(512);
+
+			const u32 chunkSize = 64 * 1024;
+			for (size_t start = 0; start < outBuf.size; start += chunkSize) {
+				size_t end = start + chunkSize;
+				if (end > outBuf.size) {
+					end = outBuf.size;
+				}
+
+				sigFile.chunks.emplace_back(CRC::MemCrc32(outBuf.buffer + start, end - start));
+			}
+
+			std::vector<u8> sigOutData;
+			DataBuffer sigOutBuf;
+			sigOutBuf.setupVector(sigOutData);
+			sigOutBuf.loading = false;
+			sigFile.serialize(sigOutBuf);
+			sigOutBuf.finalize();
+
+			std::ofstream outSig(customSongUnlockSig, std::ios_base::binary);
+			outSig.write((char*)sigOutBuf.buffer, sigOutBuf.size);
+			outSig.close();
+
+			needFileMounted = std::wstring(L"../../../Fuser/Content/Paks/customSongsUnlocked_P.pak");
+		}
+		else {
+			printf("Unlock pak file is up to date!\n");
+		}
+	}
+	printf("\n\n");
 }
 
 BOOL WINAPI DllMain(HMODULE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
@@ -451,7 +635,7 @@ BOOL WINAPI DllMain(HMODULE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 		freopen_s(&fp, "CONOUT$", "w", stderr);
 		
 #endif
-
+		CreateUnlockPak();
 		FUSER_HOOK();
 	}
 
