@@ -333,7 +333,9 @@ std::vector<byte> HexToBytes(const std::string& hex) {
 	return bytes;
 }
 
-#if 0
+// #define DEBUG_MODE
+
+#if DEBUG_MODE
 #define DBG_PRINT(...) printf(__VA_ARGS__)
 #else 
 #define DBG_PRINT(...)
@@ -413,11 +415,11 @@ void FUSER_HOOK() {
 
 	printf("Functions are unknown. Searching %zd bytes in process...\n\n", ModuleSize);
 
-	The_Second_Copy = (decltype(The_Second_Copy)) find_function("The_Second_Copy", "405556488d6c24b14881ecd8000000488bf1488b89c00100004885c9740de85dc61300ff86c8010000eb0a");
-	Decrypt_Fn = (decltype(Decrypt_Fn)) find_function("Decrypt_Fn", "405641564157b820800000e880235c00482be0488b4130498bf04c8bfa4c8bf1837824ff0f84040100004889bc2450800000");
-	Second_Inner = (decltype(Second_Inner)) find_function("Second_Inner", "48895c2408574883ec204c894140488bd966c741480000498bf848895130c6421801c6413800488b49304883c128");
+	//The_Second_Copy = (decltype(The_Second_Copy)) find_function("The_Second_Copy", "405556488d6c24b14881ecd8000000488bf1488b89c00100004885c9740de85dc61300ff86c8010000eb0a");
+	//Decrypt_Fn = (decltype(Decrypt_Fn)) find_function("Decrypt_Fn", "405641564157b820800000e880235c00482be0488b4130498bf04c8bfa4c8bf1837824ff0f84040100004889bc2450800000");
+	//Second_Inner = (decltype(Second_Inner)) find_function("Second_Inner", "48895c2408574883ec204c894140488bd966c741480000498bf848895130c6421801c6413800488b49304883c128");
 	FPakFile_Ctor = (decltype(FPakFile_Ctor)) find_function("FPakFile_Ctor", "48895c2410555657415641574883ec304533ff410fb6e94c8939498bf04c8979084c8bf2488bd94d85c0743f66453938");
-	OnCrashFunc = (decltype(OnCrashFunc)) find_function("OnCrashFunc", "48895c24185556574154415541564157488dac2450faffff4881ecb0060000488b05????????4833c4488985a0050000");
+	//OnCrashFunc = (decltype(OnCrashFunc)) find_function("OnCrashFunc", "48895c24185556574154415541564157488dac2450faffff4881ecb0060000488b05????????4833c4488985a0050000");
 	GetMasterHash = (decltype(GetMasterHash)) find_function("GetMasterHash", "4c8bdc534881ec00010000488b05????????4833c448898424f0000000498d4398498bd8498943d84c8bc233c0c744242001234567");
 	GetPakSignatureFile = (decltype(GetPakSignatureFile)) find_function("GetPakSignatureFile", "405556574154488dac2478ffffff4881ec88010000488b05????????4833c4488945784c8be1488bf2488d0d");
 	HashAndGetSize = (decltype(HashAndGetSize)) find_function("HashAndGetSize", "48895c24084889742410574883ec30498bd8488bfa488bf1e8530000004885c0742d0f10064c8b10488d5424204c8bcb4c8bc7488bc80f29442420");
@@ -440,9 +442,9 @@ void FUSER_HOOK() {
 	//_Exit(0);
 #endif
 
-	setup_hook((void**)&The_Second_Copy, The_Second_Copy_Hook);
-	setup_hook((void**)&Decrypt_Fn, Decrypt_Fn_Hook);
-	setup_hook((void**)&Second_Inner, Second_Inner_Hook);
+	//setup_hook((void**)&The_Second_Copy, The_Second_Copy_Hook);
+	//setup_hook((void**)&Decrypt_Fn, Decrypt_Fn_Hook);
+	//setup_hook((void**)&Second_Inner, Second_Inner_Hook);
 	setup_hook((void**)&FPakFile_Ctor, FPakFile_Ctor_Hook);
 	setup_hook((void**)&GetMasterHash, GetMasterHash_Hook);
 	setup_hook((void**)&GetPakSignatureFile, GetPakSignatureFile_Hook);
@@ -621,7 +623,7 @@ BOOL WINAPI DllMain(HMODULE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 		hooked = true;
 		
 //To Enable Console
-#if 1
+#if DEBUG_MODE
 		//Use existing console, or create one if needed
 		if (!AttachConsole(-1)) {
 			AllocConsole();
