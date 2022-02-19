@@ -333,7 +333,7 @@ std::vector<byte> HexToBytes(const std::string& hex) {
 	return bytes;
 }
 
-// #define DEBUG_MODE
+//#define DEBUG_MODE 1
 
 #if DEBUG_MODE
 #define DBG_PRINT(...) printf(__VA_ARGS__)
@@ -386,8 +386,12 @@ void setup_hook(void **target, void *hook) {
 void FUSER_HOOK() {
 	Base = (byte*)GetModuleHandleA("Fuser-Win64-Shipping.exe");
 	if (Base == 0) {
-		printf("ERROR! Base wasn't found!\n");
-		return;
+		Base = (byte*)GetModuleHandleA("FuserEOS-Win64-Shipping.exe");
+
+		if (Base == 0) {
+			printf("ERROR! Base wasn't found!\n");
+			return;
+		}
 	}
 	
 // Change to 0 to re-lookup all of these functions.
